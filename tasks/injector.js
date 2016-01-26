@@ -50,131 +50,47 @@ module.exports = function(grunt) {
       grunt.log.writeln('Missing option `template`, using `dest` as template instead'.grey);
     }
 
-    var filesToInject = {};
+    var filesToInject = {},
+        assetsFiles = [],
+        templateFiles = [],
+        templateRe = new RegExp("." + options.assetsExt + "$");
 
-    // Iterate over all specified file groups and gather files to inject:
 
-    this.files.forEach(function(f) {
-      var template = options.templateString || options.template || options.destFile || f.dest,
-          destination = options.destFile || f.dest;
-
-      if (!options.templateString && !grunt.file.exists(template)) {
-        grunt.log.error('Could not find template "' + template + '". Injection not possible');
-        return false;
-      }
-
-      // Group by destination:
-      if (!filesToInject[destination]) {
-        filesToInject[destination] = {};
-      }
-
-      // ...and template:
-      if (!filesToInject[destination][template]) {
-        filesToInject[destination][template] = [];
-      }
-
-      var files = filesToInject[destination][template];
-
-      f.src.forEach(function(filepath) {
-        // Warn on and remove invalid source files.
-        if (!grunt.file.exists(filepath)) {
-          grunt.log.warn('Source file "' + filepath + '" not found.');
-          return;
-        }
-
-        // Special handling of bower.json:
-        if (path.basename(filepath) === 'bower.json') {
-          files.push.apply(files, getFilesFromBower(filepath).map(function (fpath) {
-            return {path: fpath, ignore: path.dirname(filepath), key: (options.bowerPrefix || '') + ext(fpath)};
-          }));
-        } else {
-          files.push({path: filepath, key: ext(filepath)});
-        }
-      });
-
-      // Clear existing content between injectors
-      var templateContent = options.templateString || grunt.file.read(template),
-        templateOriginal = templateContent;
-
-      var re = getInjectorTagsRegExp(options.starttag, options.endtag);
-      templateContent = templateContent.replace(re, function (match, indent, starttag, content, endtag) {
-        return indent + starttag + options.lineEnding + indent + endtag;
-      });
-
-      if (templateContent !== templateOriginal || !grunt.file.exists(destination)) {
-        grunt.file.write(destination, templateContent);
-      }
-    });
-
-    /**
-     * Inject all gathered files per destination, template and starttag:
-     */
-    _.forIn(filesToInject, function (templates, destination) {
-      _.forIn(templates, function (files, template) {
-        // Remove possible duplicates:
-        files = _.uniq(files);
-
-        files.forEach(function (obj) {
-          // Get start and end tag for each file:
-          obj.starttag = getTag(options.starttag, obj.key);
-          obj.endtag = getTag(options.endtag, obj.key);
-
-          // Fix filename (remove ignorepaths and such):
-          var file = obj.path;
-          file = makeMinifiedIfNeeded(options.min, file);
-          if (options.relative) {
-            var base =  path.dirname(destination);
-            file = path.relative(base, file);
-          }
-          file = unixify(file);
-          if (options.ignorePath || obj.ignore) {
-            file = removeBasePath(toArray(options.ignorePath).concat(toArray(obj.ignore)), file);
-          }
-          if (options.addRootSlash) {
-            file = addRootSlash(file);
-          } else {
-            file = removeRootSlash(file);
-          }
-          obj.file = file;
-        });
-
-        // Read template:
-        var templateContent = options.templateString || grunt.file.read(template),
-            templateOriginal = templateContent;
-
-        // Inject per start tag:
-        _.forIn(_.groupBy(files, 'starttag'), function (sources, starttag) {
-          var endtag = sources[0].endtag,
-              key = sources[0].key;
-
-          // Transform to injection content:
-          sources.forEach(function (obj, i) {
-            obj.transformed = options.transform(obj.file, i, sources.length);
+      this.files.forEach(function(f) {
+          f.src.forEach(function(filepath) {
+              if (templateRe.test(filepath)) {
+                  assetsFiles.push(filepath);
+              } else {
+                  templateFiles.push(filepath);
+              }
           });
+      });
 
-          // Sort files if needed:
-          if (typeof options.sort === 'function') {
-            sources.sort(function (a, b) {
-              return options.sort(a.file, b.file);
-            });
-          }
+      // Transform to injection content:
+      assetsFiles = assetsFiles.map(function (obj, i) {
+          return {transformed: options.transform(obj, i, assetsFiles.length)};
+      });
 
-          // Do the injection:
-          var re = getInjectorTagsRegExp(starttag, endtag);
+      templateFiles.forEach(function(filepath) {
+          var templateContent = grunt.file.read(filepath),
+              templateOriginal = templateContent,
+              starttag = getTag(options.starttag, options.assetsExt);
+
+          var re = getInjectorTagsRegExp(starttag, options.endtag);
+
           templateContent = templateContent.replace(re, function (match, indent, starttag, content, endtag) {
-            grunt.log.writeln('Injecting ' + key.green + ' files ' + ('(' + sources.length + ' files)').grey);
-            return indent + starttag + getIndentedTransformations(sources, indent, options.lineEnding) + endtag;
+              grunt.log.writeln('Injecting ' + filepath.green + ' files ' + ('(' + assetsFiles.length + ' files)').grey);
+              return indent + starttag + getIndentedTransformations(assetsFiles, indent, options.lineEnding) + endtag;
           });
-        });
 
-        // Write the destination file.
-        if (templateContent !== templateOriginal || !grunt.file.exists(destination)) {
-          grunt.file.write(destination, templateContent);
-        } else {
-          grunt.log.ok('Nothing changed');
-        }
+          // Write the destination file.
+          if (templateContent !== templateOriginal) {
+              grunt.file.write(filepath, templateContent);
+          } else {
+              grunt.log.ok('Nothing changed');
+          }
       });
-    });
+
 
   });
 };
@@ -188,18 +104,18 @@ function getTag (tag, ext) {
 }
 
 function getFilesFromBower (bowerFile) {
-  
+
   // Load bower dependencies via `wiredep` programmatic access
   var dependencies = require('wiredep')({
         'bowerJson': JSON.parse(fs.readFileSync(bowerFile, 'utf8')),
         'directory': getBowerComponentsDir(bowerFile)
-      } 
+      }
     );
-     
+
   // Pluck out just the JS and CSS Dependencies
   var filteredDependencies = _.pick(dependencies,'css','js');
-  
-  // Concatenate into a filepaths array   
+
+  // Concatenate into a filepaths array
   return Object.keys(filteredDependencies).reduce(function (files, key) {
        return files.concat(filteredDependencies[key]);
     }, []);
@@ -269,6 +185,7 @@ function getIndentedTransformations (sources, indent, lineEnding) {
   });
   transformations.unshift('');
   transformations.push('');
+
   return transformations.join(lineEnding + indent);
 }
 
