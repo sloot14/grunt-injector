@@ -68,7 +68,14 @@ module.exports = function(grunt) {
 
       // Transform to injection content:
       assetsFiles = assetsFiles.map(function (obj, i) {
-          return {transformed: options.transform(obj, i, assetsFiles.length)};
+          var path = options.transform(obj, i, assetsFiles.length);
+          if (options.ignorePath) {
+              path = path.replace(options.ignorePath, "");
+          }
+          return {
+              original: obj,
+              transformed: path
+          };
       });
 
       templateFiles.forEach(function(filepath) {
@@ -188,4 +195,3 @@ function getIndentedTransformations (sources, indent, lineEnding) {
 
   return transformations.join(lineEnding + indent);
 }
-
